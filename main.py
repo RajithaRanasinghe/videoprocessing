@@ -4,6 +4,7 @@ import numpy as np
 from PySide2.QtWidgets import QApplication, QMainWindow, QLabel, QDialog, QVBoxLayout, QWidget, QMenuBar, QMenu, QAction, QStatusBar, QFileDialog, QHBoxLayout, QSlider, QDesktopWidget, QSplitter, QInputDialog, QMessageBox, QComboBox, QPushButton, QLineEdit, QGridLayout
 from PySide2.QtGui import QImage, QPixmap, QColor
 from PySide2.QtCore import QTimer, Qt
+import os
 
 from skimage.filters import threshold_yen, threshold_triangle, threshold_otsu, threshold_minimum, threshold_mean, threshold_isodata
 
@@ -12,6 +13,7 @@ class CustomFilterDialog(QDialog):
 
     def __init__(self):
         super().__init__()
+
 
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
@@ -190,6 +192,7 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
 
+
         # Webcam and video file variables
         self.cap = None
         self.timer = None
@@ -241,7 +244,7 @@ class App(QMainWindow):
         self.setup_status_bar()
 
         # Window setup
-        self.setWindowTitle("Webcam with PySide2 - Split View")
+        self.setWindowTitle("HMI v0.1")
         self.resize(1600, 600)
 
     def setup_menu_bar(self):
@@ -461,6 +464,19 @@ class App(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    # Load the stylesheet
+    STYLE_FILE_NAME = "style_dark.qss"
+    FOLDER_NAME = "/app_data"
+    file_path = os.path.join(
+        os.path.dirname(
+            os.path.abspath(__file__)) +
+        FOLDER_NAME,
+        STYLE_FILE_NAME)
+    with open(file_path, "r", encoding="utf-8") as f:
+        app.setStyleSheet(f.read())
+
     window = App()
     window.showMaximized()
     sys.exit(app.exec_())

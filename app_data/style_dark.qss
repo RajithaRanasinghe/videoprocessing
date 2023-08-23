@@ -1,0 +1,103 @@
+QWidget {
+    background-color: #1f1f1f;
+    color: #f7f7f7;
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+}
+
+QPushButton {
+    background-color: #0066cc;
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+    padding: 5px;
+    border: none;
+    border-radius: 5px;
+    color: #f7f7f7;
+}
+
+QPushButton:hover {
+    background-color: #d4af37;
+}
+
+QPushButton:pressed {
+    background-color: #337ab7;
+}
+
+QMenuBar, QMenu, QMenuBar::item {
+    background-color: #333;
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+    padding: 5px;
+    color: #f7f7f7;
+}
+
+QMenuBar::item:selected, QMenu::item:selected {
+    background-color: #d4af37;
+}
+
+QProgressBar {
+    border: 4px solid #d4af37;
+    border-radius: 5px;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background-color: #d4af37;
+}
+
+QToolBar {
+    border: 4px solid #666;
+    background: #1f1f1f;
+}
+
+QToolBar::item:selected {
+    background: #d4af37;
+}
+
+QToolButton {
+    background-color: #0066cc;
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+    padding: 5px;
+    border-radius: 5px;
+    border: none;
+}
+
+QToolButton:hover {
+    background-color: #d4af37;
+}
+
+/* StyleSheet for QComboBox */
+QComboBox {
+    border: 4px solid #666;
+    border-radius: 5px;
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+    background-color: #0066cc;
+    padding: 5px;
+}
+
+QComboBox:hover {
+    background-color: #d4af37;
+}
+
+QComboBox::item:selected {
+    background-color: #d4af37;
+}
+
+/* StyleSheet for QRadioButton */
+QRadioButton {
+    font-size: 15px;
+    font-family: Arial, sans-serif;
+    padding: 5px;
+    color: #f7f7f7;
+}
+
+QRadioButton::indicator {
+    width: 28px;
+    height: 28px;
+}
+
+QLineEdit {
+    border: 1px solid #fff;
+}
