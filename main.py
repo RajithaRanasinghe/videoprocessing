@@ -8,6 +8,26 @@ import os
 
 from skimage.filters import threshold_yen, threshold_triangle, threshold_otsu, threshold_minimum, threshold_mean, threshold_isodata
 
+import torch.nn as nn
+import torch.optim as optim
+import torch
+import torchvision.transforms as transforms
+
+class SimpleANN(nn.Module):
+    def __init__(self, input_size, hidden_sizes, output_size):
+        super(SimpleANN, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_sizes[0])
+        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+        self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
+        self.fc4 = nn.Linear(hidden_sizes[2], output_size)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        x = self.relu(self.fc3(x))
+        x = self.fc4(x)
+        return x
 
 class CustomFilterDialog(QDialog):
 
@@ -81,6 +101,36 @@ class FrameProcessor:
     def __init__(self):
         self.filter_type = "original"
         self.custom_kernel = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.model = SimpleANN(input_size=224*224*3, hidden_sizes=[500, 300, 100], output_size=224*224*3).to(self.device)
+        self.input_size = 1024 * 768 * 3  # replace W, H, and C with the actual values.
+        
+
+
+        # Define preprocessing pipeline for the frame before feeding it to the model
+        self.transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),  # Just an example size, adjust as needed
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Example normalization
+        ])
+
+    def set_model(self):
+        # A simple ANN with 3 hidden layers
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(self.input_size, 500),
+            torch.nn.ReLU(),
+            torch.nn.Linear(500, 500),
+            torch.nn.ReLU(),
+            torch.nn.Linear(500, 500),
+            torch.nn.ReLU(),
+            torch.nn.Linear(500, self.input_size),
+            torch.nn.Sigmoid()  # Assuming the input image is normalized. If not, post-process scaling is needed.
+        ).to(self.device)
+
+        self.loss_fn = torch.nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+
 
     def set_filter(self, filter_type, threshold_method="binary"):
         self.filter_type = filter_type
@@ -92,6 +142,8 @@ class FrameProcessor:
     def process(self, frame: np.ndarray) -> np.ndarray:
         if self.filter_type == "original":
             return frame
+        elif self.filter_type == "ann":
+            return self.ann_filter(frame)
         elif self.filter_type == "sobel":
             return self.sobel_filter(frame)
         elif self.filter_type == "gaussian":
@@ -111,6 +163,24 @@ class FrameProcessor:
         else:
            print('Wrong Filter type: returning original')
            return frame
+        
+    def ann_filter(self, frame: np.ndarray) -> np.ndarray:
+        tensor_frame = torch.tensor(frame, dtype=torch.float32).flatten().to(self.device)
+        output = self.model(tensor_frame)
+        processed_frame = output.detach().cpu().numpy().reshape(frame.shape)
+        
+        # If the original image isn't normalized, scale the output here.
+        # processed_frame = (processed_frame * 255).astype(np.uint8)
+        return processed_frame
+
+    def train_on_feedback(self, frame, feedback):
+        if feedback > 0:  # assuming positive feedback value
+            tensor_frame = torch.tensor(frame, dtype=torch.float32).flatten().to(self.device)
+            self.optimizer.zero_grad()
+            output = self.model(tensor_frame)
+            loss = self.loss_fn(output, tensor_frame)
+            loss.backward()
+            self.optimizer.step()
          
     def custom_filter(self, frame: np.ndarray) -> np.ndarray:
         if self.custom_kernel is None:
@@ -199,10 +269,14 @@ class App(QMainWindow):
         self.video_source = 'webcam'  # default to webcam
         self.processor = FrameProcessor()
         self.slider_being_dragged = False
+        self.current_frame = None
 
         # Fetch screen resolution
         screen_geometry = QDesktopWidget().availableGeometry()
         self.screen_width, self.screen_height = screen_geometry.width(), screen_geometry.height()
+
+        self.feedback_btn = QPushButton("Provide Positive Feedback", self)
+        self.feedback_btn.clicked.connect(self.on_feedback)
 
         # GUI setup
         self.setup_ui()
@@ -231,6 +305,7 @@ class App(QMainWindow):
         main_layout = QVBoxLayout()
         main_layout.addWidget(splitter)
         main_layout.addWidget(self.video_progress)
+        main_layout.addWidget(self.feedback_btn)
         
     
         container = QWidget()
@@ -286,6 +361,9 @@ class App(QMainWindow):
         original_action = QAction("Original", self)
         original_action.triggered.connect(lambda: self.set_filter("original"))
 
+        ann_action = QAction("ann", self)
+        ann_action.triggered.connect(lambda: self.set_filter("ann"))
+
         sobel_action = QAction("Sobel Filter", self)
         sobel_action.triggered.connect(lambda: self.set_filter("sobel"))
 
@@ -307,7 +385,7 @@ class App(QMainWindow):
         custom_action = QAction("Custom Kernel", self)
         custom_action.triggered.connect(self.set_custom_filter)
 
-        filters_menu.addActions([original_action, sobel_action, gaussian_action, canny_action, sepia_action, negative_action, color_swap_action, custom_action])
+        filters_menu.addActions([original_action, ann_action, sobel_action, gaussian_action, canny_action, sepia_action, negative_action, color_swap_action, custom_action])
 
         threshold_submenu = QMenu("Threshold", self)
 
@@ -335,6 +413,11 @@ class App(QMainWindow):
         threshold_submenu.addActions([binary_action, yen_action, triangle_action, otsu_action, minimum_action, mean_action, isodata_action])
         filters_menu.addMenu(threshold_submenu)
         menu_bar.addMenu(filters_menu)
+
+    def on_feedback(self):
+        # We assume 1 represents positive feedback and -1 represents negative feedback
+        feedback = 1
+        self.processor.train_on_feedback(self.current_frame, feedback)
 
 
     def set_custom_filter(self):
@@ -387,6 +470,8 @@ class App(QMainWindow):
                 interval = 30 #FPS
             else:
                 self.cap = cv2.VideoCapture(self.video_source)
+
+
                 
                 # Adjust the range of the slider to match the video's duration in milliseconds
                 total_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) / self.cap.get(cv2.CAP_PROP_FPS) * 1000)
@@ -399,7 +484,14 @@ class App(QMainWindow):
                 print("Could not open video source!")
                 self.cap = None
                 return
-            
+
+            W = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # Width of the frames
+            H = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) # Height of the frames
+            C = 3  # Number of channels (3 for color frames, 1 for grayscale)
+
+            input_size = W * H * C
+            self.processor.input_size = input_size
+            self.processor.set_model()         
             
             # Timer for updating video feed
             self.timer = QTimer(self)
@@ -421,6 +513,7 @@ class App(QMainWindow):
     def update_frame(self):
         if self.cap:
             ret, frame = self.cap.read()
+            self.current_frame = frame
         
             # Update video progress slider based on video time
             if self.video_source != "webcam":
