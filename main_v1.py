@@ -12,6 +12,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torch
 import torchvision.transforms as transforms
+from PIL import Image
+import torchvision.models as models
+import torch.nn.functional as F
+from pytorch_msssim import ssim
 
 class SimpleANN(nn.Module):
     def __init__(self, input_size, hidden_sizes, output_size):
@@ -94,7 +98,64 @@ class CustomFilterDialog(QDialog):
 
 
 
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
 
+    def forward(self, x):
+        return self.double_conv(x)
+    
+    
+class UNet(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UNet, self).__init__()
+
+        self.enc_conv1 = DoubleConv(in_channels, 64)
+        self.enc_conv2 = DoubleConv(64, 128)
+        self.enc_conv3 = DoubleConv(128, 256)
+        self.enc_conv4 = DoubleConv(256, 512)
+        self.pool = nn.MaxPool2d(2)
+
+        self.up_trans1 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.dec_conv1 = DoubleConv(512, 256)
+        self.up_trans2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec_conv2 = DoubleConv(256, 128)
+        self.up_trans3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec_conv3 = DoubleConv(128, 64)
+        self.out_conv = nn.Conv2d(64, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        # Encoder
+        x1 = self.enc_conv1(x)
+        x2 = self.pool(x1)
+        x3 = self.enc_conv2(x2)
+        x4 = self.pool(x3)
+        x5 = self.enc_conv3(x4)
+        encoded = self.pool(x5)
+        x = self.enc_conv4(encoded)
+
+        # Decoder with skip connections
+        x = self.up_trans1(x)
+        x = torch.cat([x, x5], dim=1)
+        x = self.dec_conv1(x)
+
+        x = self.up_trans2(x)
+        x = torch.cat([x, x3], dim=1)
+        x = self.dec_conv2(x)
+
+        x = self.up_trans3(x)
+        x = torch.cat([x, x1], dim=1)
+        x = self.dec_conv3(x)
+
+        return self.out_conv(x)
+
+    
 class FrameProcessor:
     """Class for frame-by-frame video processing."""
 
@@ -110,26 +171,63 @@ class FrameProcessor:
         # Define preprocessing pipeline for the frame before feeding it to the model
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((224, 224)),  # Just an example size, adjust as needed
+            transforms.Resize((256,256)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Example normalization
-        ])
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        
+    def denormalize(self, tensor):
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1).to(self.device)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1).to(self.device)
+        return torch.clamp(tensor * std + mean, 0, 1)  # Clamp values between 0 and 1
 
-    def set_model(self):
-        # A simple ANN with 3 hidden layers
-        self.model = torch.nn.Sequential(
-            torch.nn.Linear(self.input_size, 500),
-            torch.nn.ReLU(),
-            torch.nn.Linear(500, 500),
-            torch.nn.ReLU(),
-            torch.nn.Linear(500, 500),
-            torch.nn.ReLU(),
-            torch.nn.Linear(500, self.input_size),
-            torch.nn.Sigmoid()  # Assuming the input image is normalized. If not, post-process scaling is needed.
-        ).to(self.device)
+
+    def set_cnn_model(self):
+        # Initialize the UNet model
+        self.model = UNet(in_channels=3, out_channels=3).to(self.device)
 
         self.loss_fn = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+
+    def cnn_filter(self, frame: np.ndarray) -> np.ndarray:
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_tensor = self.transform(frame)
+        input_rgb = frame_tensor.unsqueeze(0).float().to(self.device)
+
+        # Pass the tensor through the ML model
+        output_model = self.model(input_rgb)
+
+        # Denormalize the tensor
+        denormalized_output = self.denormalize(output_model)
+
+        # Make sure the tensor shape is [H, W, C] for cv2
+        output_rgb = denormalized_output.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+
+        # Convert the output to uint8 format as cv2 expects this
+        output_rgb = (output_rgb * 255).astype(np.uint8)
+
+        processed_frame = cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR)
+        
+        return processed_frame
+
+    
+    def train_on_feedback(self, frame, feedback):
+        if feedback > 0:  # assuming positive feedback value
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_tensor = self.transform(frame)
+            input_rgb = frame_tensor.unsqueeze(0).float().to(self.device)
+            
+            self.optimizer.zero_grad()
+            
+            # Pass the tensor through the CNN
+            output = self.model(input_rgb)
+            
+            # Calculate the loss by comparing the CNN's output with the original frame tensor
+            loss = self.loss_fn(output, input_rgb) 
+        
+            loss.backward()
+            self.optimizer.step()
 
 
     def set_filter(self, filter_type, threshold_method="binary"):
@@ -142,8 +240,8 @@ class FrameProcessor:
     def process(self, frame: np.ndarray) -> np.ndarray:
         if self.filter_type == "original":
             return frame
-        elif self.filter_type == "ann":
-            return self.ann_filter(frame)
+        elif self.filter_type == "cnn":
+            return self.cnn_filter(frame)
         elif self.filter_type == "sobel":
             return self.sobel_filter(frame)
         elif self.filter_type == "gaussian":
@@ -163,24 +261,6 @@ class FrameProcessor:
         else:
            print('Wrong Filter type: returning original')
            return frame
-        
-    def ann_filter(self, frame: np.ndarray) -> np.ndarray:
-        tensor_frame = torch.tensor(frame, dtype=torch.float32).flatten().to(self.device)
-        output = self.model(tensor_frame)
-        processed_frame = output.detach().cpu().numpy().reshape(frame.shape)
-        
-        # If the original image isn't normalized, scale the output here.
-        # processed_frame = (processed_frame * 255).astype(np.uint8)
-        return processed_frame
-
-    def train_on_feedback(self, frame, feedback):
-        if feedback > 0:  # assuming positive feedback value
-            tensor_frame = torch.tensor(frame, dtype=torch.float32).flatten().to(self.device)
-            self.optimizer.zero_grad()
-            output = self.model(tensor_frame)
-            loss = self.loss_fn(output, tensor_frame)
-            loss.backward()
-            self.optimizer.step()
          
     def custom_filter(self, frame: np.ndarray) -> np.ndarray:
         if self.custom_kernel is None:
@@ -361,8 +441,8 @@ class App(QMainWindow):
         original_action = QAction("Original", self)
         original_action.triggered.connect(lambda: self.set_filter("original"))
 
-        ann_action = QAction("ann", self)
-        ann_action.triggered.connect(lambda: self.set_filter("ann"))
+        cnn_action = QAction("cnn", self)
+        cnn_action.triggered.connect(lambda: self.set_filter("cnn"))
 
         sobel_action = QAction("Sobel Filter", self)
         sobel_action.triggered.connect(lambda: self.set_filter("sobel"))
@@ -385,7 +465,7 @@ class App(QMainWindow):
         custom_action = QAction("Custom Kernel", self)
         custom_action.triggered.connect(self.set_custom_filter)
 
-        filters_menu.addActions([original_action, ann_action, sobel_action, gaussian_action, canny_action, sepia_action, negative_action, color_swap_action, custom_action])
+        filters_menu.addActions([original_action, cnn_action, sobel_action, gaussian_action, canny_action, sepia_action, negative_action, color_swap_action, custom_action])
 
         threshold_submenu = QMenu("Threshold", self)
 
@@ -467,11 +547,9 @@ class App(QMainWindow):
                 self.cap = cv2.VideoCapture(0)
 
                 # Timer for updating video feed
-                interval = 30 #FPS
+                interval = 5 #FPS
             else:
                 self.cap = cv2.VideoCapture(self.video_source)
-
-
                 
                 # Adjust the range of the slider to match the video's duration in milliseconds
                 total_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) / self.cap.get(cv2.CAP_PROP_FPS) * 1000)
@@ -491,7 +569,8 @@ class App(QMainWindow):
 
             input_size = W * H * C
             self.processor.input_size = input_size
-            self.processor.set_model()         
+            #self.processor.set_ann_model()
+            self.processor.set_cnn_model()       
             
             # Timer for updating video feed
             self.timer = QTimer(self)
@@ -527,6 +606,8 @@ class App(QMainWindow):
 
                 # Show the unprocessed frame
                 self.display_frame(frame, self.input_label)
+
+                self.processor.train_on_feedback(self.current_frame, 1)
 
                 # Process and show the processed frame
                 processed_frame = self.processor.process(frame)
