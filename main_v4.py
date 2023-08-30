@@ -155,6 +155,8 @@ class UNet(nn.Module):
 
         return self.out_conv(x)
 
+
+
 class VAE(nn.Module):
     def __init__(self, input_size, image_channels=3, latent_dim=32, hidden_dims=None):
         super(VAE, self).__init__()
@@ -270,10 +272,24 @@ class FrameProcessor:
 
         self.loss_fn = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+    
+    def swap_channels(self, frame: np.ndarray, sequence=(2, 1, 0)) -> np.ndarray:
+        """
+        Swaps the channels of the frame.
+        
+        Parameters:
+        - frame: Input frame of shape (H, W, C).
+        - sequence: A tuple indicating the order of the channels. Default is (2, 1, 0) which swaps RGB to BGR.
+        
+        Returns:
+        - The frame with channels swapped.
+        """
+        return frame[:, :, sequence]
+
 
     def cnn_filter(self, frame: np.ndarray) -> np.ndarray:
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  
         frame_tensor = self.transform(frame)
         input_rgb = frame_tensor.unsqueeze(0).float().to(self.device)
 
@@ -286,12 +302,16 @@ class FrameProcessor:
         # Make sure the tensor shape is [H, W, C] for cv2
         output_rgb = denormalized_output.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
 
+
         # Convert the output to uint8 format as cv2 expects this
         output_rgb = (output_rgb * 255).astype(np.uint8)
 
-        processed_frame = cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR)
+        #processed_frame = cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR)
+
+        # Swap channels
+        #swapped_frame = self.swap_channels(processed_frame)
         
-        return processed_frame
+        return output_rgb
 
 
     
@@ -310,6 +330,7 @@ class FrameProcessor:
 
                 # Calculate the VAE loss
                 loss = self.vae_loss(recon_frame, input_rgb, mu, log_var)
+                #loss = self.loss_fn(recon_frame, input_rgb) 
 
                 loss.backward()
                 self.optimizer.step()
@@ -816,6 +837,7 @@ class App(QMainWindow):
     def display_frame(self, frame, label):
         h, w, ch = frame.shape
         bytes_per_line = ch * w
+        frame = np.ascontiguousarray(frame)  # Ensure the frame is C-contiguous
         qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
         label.setPixmap(pixmap)
