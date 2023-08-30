@@ -259,9 +259,8 @@ class FrameProcessor:
     def set_cnn_model(self):
         # Initialize the UNet model
         #self.model = UNet(in_channels=3, out_channels=3).to(self.device)
-        #self.model = VAE(image_channels=3, latent_dim=32).to(self.device)
         
-        #Initialization
+        #Initialization VAE
         input_size = 256  # Assuming images are 256x256
         image_channels = 3  # For RGB images
         latent_dim = 64  # Dimension of the latent space
