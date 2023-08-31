@@ -819,7 +819,7 @@ class App(QMainWindow):
                 # Show the unprocessed frame
                 self.display_frame(frame, self.input_label)
 
-                self.processor.train_on_feedback(self.current_frame, 1)
+                #self.processor.train_on_feedback(self.current_frame, 1)
 
                 if self.recall_flag:
                     # Process and show the processed frame
