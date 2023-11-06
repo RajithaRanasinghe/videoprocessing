@@ -1,19 +1,33 @@
 import sys
-import cv2
+from cv2 import (cvtColor, GaussianBlur, Canny, Sobel, CV_16S, addWeighted,
+                 convertScaleAbs, threshold, filter2D, split, merge, VideoCapture,
+                 COLOR_GRAY2RGB, COLOR_RGB2GRAY, COLOR_BGR2RGB, COLOR_RGB2BGR,
+                 BORDER_DEFAULT, THRESH_BINARY, THRESH_OTSU, CAP_PROP_POS_FRAMES,
+                 CAP_PROP_FRAME_COUNT, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT,
+                 CAP_PROP_FPS, CAP_PROP_POS_MSEC)
 import numpy as np
-from PySide2.QtWidgets import QApplication, QMainWindow, QLabel, QDialog, QVBoxLayout, QWidget, QMenuBar, QMenu, QAction, QStatusBar, QFileDialog, QHBoxLayout, QSlider, QDesktopWidget, QSplitter, QInputDialog, QMessageBox, QComboBox, QPushButton, QLineEdit, QGridLayout
-from PySide2.QtGui import QImage, QPixmap, QColor
+from PySide2.QtWidgets import (QApplication, QMainWindow, QLabel, QDialog, QVBoxLayout, QWidget,
+                               QMenuBar, QMenu, QAction, QStatusBar, QFileDialog, QHBoxLayout, QSlider,
+                               QDesktopWidget, QSplitter, QComboBox, QPushButton, QLineEdit, QGridLayout)
+from PySide2.QtGui import QImage, QPixmap
 from PySide2.QtCore import QTimer, Qt
-import os
+
+
+from os import path
 
 from skimage.filters import threshold_yen, threshold_triangle, threshold_minimum, threshold_isodata
 
-import torch.nn as nn
-import torch
-import torchvision.transforms as transforms
-import torch.nn.functional as F
 
-
+from torch.nn import (MSELoss, Module, Sequential, Linear,
+                      ConvTranspose2d, Conv2d, ReLU)
+from torch.optim import Adam
+from torch import (device, cuda, no_grad,
+                   exp, randn_like, tensor, clamp, sum, save, load
+                   )
+from torch.nn.functional import mse_loss
+from torchvision.transforms import (Compose, ToPILImage, Resize,
+                                    ToTensor, Normalize
+                                    )
 class CustomFilterDialog(QDialog):
 
     def __init__(self):
@@ -76,7 +90,7 @@ class CustomFilterDialog(QDialog):
     def get_kernel(self):
         return self.kernel
 
-class VAE(nn.Module):
+class VAE(Module):
     def __init__(self, input_size, image_channels=3, latent_dim=32, hidden_dims=None):
         super(VAE, self).__init__()
 
@@ -88,35 +102,35 @@ class VAE(nn.Module):
         in_channels = image_channels
         for h_dim in hidden_dims:
             modules.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, h_dim, kernel_size=4, stride=2, padding=1),
-                    nn.ReLU()
+                Sequential(
+                    Conv2d(in_channels, h_dim, kernel_size=4, stride=2, padding=1),
+                    ReLU()
                 )
             )
             in_channels = h_dim
-        self.encoder = nn.Sequential(*modules)
+        self.encoder = Sequential(*modules)
         self.h_dim_last = hidden_dims[-1]
 
         # Calculate size after encoder
         self.flattened_size = self.calculate_size_after_convolutions(input_size)
-        self.fc_mu = nn.Linear(self.flattened_size, latent_dim)
-        self.fc_var = nn.Linear(self.flattened_size, latent_dim)
+        self.fc_mu = Linear(self.flattened_size, latent_dim)
+        self.fc_var = Linear(self.flattened_size, latent_dim)
 
         # Build Decoder
         modules = []
-        self.decoder_input = nn.Linear(latent_dim, self.flattened_size)
+        self.decoder_input = Linear(latent_dim, self.flattened_size)
         hidden_dims.reverse()
 
         for i in range(len(hidden_dims) - 1):
             modules.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], kernel_size=4, stride=2, padding=1),
-                    nn.ReLU()
+                Sequential(
+                    ConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], kernel_size=4, stride=2, padding=1),
+                    ReLU()
                 )
             )
-        self.decoder = nn.Sequential(
+        self.decoder = Sequential(
             *modules,
-            nn.ConvTranspose2d(hidden_dims[-1], image_channels, kernel_size=4, stride=2, padding=1)
+            ConvTranspose2d(hidden_dims[-1], image_channels, kernel_size=4, stride=2, padding=1)
         )
 
     def calculate_size_after_convolutions(self, size):
@@ -124,8 +138,8 @@ class VAE(nn.Module):
         return size * size * self.h_dim_last
 
     def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5*logvar)
-        eps = torch.randn_like(std)
+        std = exp(0.5*logvar)
+        eps = randn_like(std)
         return mu + eps*std
 
     def forward(self, x):
@@ -152,29 +166,29 @@ class FrameProcessor:
         self.filter_type = "original"
         self.custom_kernel = None
         self.latent_variable = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device("cuda" if cuda.is_available() else "cpu")
         #self.model = SimpleANN(input_size=224*224*3, hidden_sizes=[500, 300, 100], output_size=224*224*3).to(self.device)
         self.input_size = 1024 * 768 * 3  # replace W, H, and C with the actual values.
 
 
 
         # Define preprocessing pipeline for the frame before feeding it to the model
-        self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((256,256)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        self.transform = Compose([
+            ToPILImage(),
+            Resize((256,256)),
+            ToTensor(),
+            Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
             ])
 
     def vae_loss(self, recon_x, x, mu, log_var):
-        BCE = F.mse_loss(recon_x, x, reduction='sum')
-        KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+        BCE = mse_loss(recon_x, x, reduction='sum')
+        KLD = -0.5 * sum(1 + log_var - mu.pow(2) - log_var.exp())
         return BCE + KLD
 
-    def denormalize(self, tensor):
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1).to(self.device)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1).to(self.device)
-        return torch.clamp(tensor * std + mean, 0, 1)  # Clamp values between 0 and 1
+    def denormalize(self, in_tensor):
+        mean = tensor([0.485, 0.456, 0.406]).view(1,3,1,1).to(self.device)
+        std = tensor([0.229, 0.224, 0.225]).view(1,3,1,1).to(self.device)
+        return clamp(in_tensor * std + mean, 0, 1)  # Clamp values between 0 and 1
 
 
     def set_cnn_model(self):
@@ -189,8 +203,8 @@ class FrameProcessor:
 
         self.model = VAE(input_size, image_channels=image_channels, latent_dim=latent_dim, hidden_dims=hidden_dims).to(self.device)
 
-        self.loss_fn = torch.nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.loss_fn = MSELoss()
+        self.optimizer = Adam(self.model.parameters(), lr=0.001)
 
     def swap_channels(self, frame: np.ndarray, sequence=(2, 1, 0)) -> np.ndarray:
         """
@@ -208,7 +222,7 @@ class FrameProcessor:
 
     def cnn_filter(self, frame: np.ndarray) -> np.ndarray:
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cvtColor(frame, COLOR_BGR2RGB)
         frame_tensor = self.transform(frame)
         input_rgb = frame_tensor.unsqueeze(0).float().to(self.device)
 
@@ -238,7 +252,7 @@ class FrameProcessor:
         if feedback > 0:
             strength = feedback
             for strength in range(strength):
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cvtColor(frame, COLOR_BGR2RGB)
                 frame_tensor = self.transform(frame)
                 input_rgb = frame_tensor.unsqueeze(0).float().to(self.device)
 
@@ -263,7 +277,7 @@ class FrameProcessor:
         model.eval()
 
         # Generate a frame from the given latent variable
-        with torch.no_grad():
+        with no_grad():
             generated_frame_tensor = model.decode(latent_variable).squeeze(0)
 
         # Denormalize the generated tensor
@@ -277,7 +291,7 @@ class FrameProcessor:
         output_rgb = (output_rgb * 255).astype(np.uint8)
 
         # Convert from RGB to BGR for cv2 compatibility
-        processed_frame = cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR)
+        processed_frame = cvtColor(output_rgb, COLOR_RGB2BGR)
 
         return processed_frame
 
@@ -288,8 +302,8 @@ class FrameProcessor:
         :param model_path: Path to save the model.
         :param latent_path: Path to save the latent variable.
         """
-        torch.save(self.model.state_dict(), model_path)
-        torch.save(self.latent_variable, latent_path)
+        save(self.model.state_dict(), model_path)
+        save(self.latent_variable, latent_path)
         print(f"Model saved to {model_path} and Latent variable saved to {latent_path}")
 
     def load_model(self, model_path="saved_model.pth", latent_path="saved_latent.pth"):
@@ -300,15 +314,15 @@ class FrameProcessor:
         :param latent_path: Path to load the latent variable from.
         :return: Processed frame after generating from loaded latent variable.
         """
-        if not (os.path.exists(model_path) and os.path.exists(latent_path)):
+        if not (path.exists(model_path) and path.exists(latent_path)):
             print("Model or latent variable file does not exist. Please check the paths provided.")
             return None
 
-        self.model.load_state_dict(torch.load(model_path))
+        self.model.load_state_dict(load(model_path))
         self.model.to(self.device)
         self.model.eval()  # Set model to evaluation mode
 
-        self.latent_variable = torch.load(latent_path).to(self.device)
+        self.latent_variable = load(latent_path).to(self.device)
 
 
     def set_filter(self, filter_type, threshold_method="binary"):
@@ -326,7 +340,7 @@ class FrameProcessor:
         elif self.filter_type == "sobel":
             return self.sobel_filter(frame)
         elif self.filter_type == "gaussian":
-            return cv2.GaussianBlur(frame, (15, 15), 0)
+            return GaussianBlur(frame, (15, 15), 0)
         elif self.filter_type == "canny":
             return self.canny_edge_detection(frame)
         elif self.filter_type == "sepia":
@@ -347,30 +361,30 @@ class FrameProcessor:
         if self.custom_kernel is None:
             print("No custom kernel provided. Returning original frame.")
             return frame
-        return cv2.filter2D(frame, -1, self.custom_kernel)
+        return filter2D(frame, -1, self.custom_kernel)
 
     def canny_edge_detection(self, frame: np.ndarray) -> np.ndarray:
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        return cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+        gray = cvtColor(frame, COLOR_RGB2GRAY)
+        edges = Canny(gray, 50, 150)
+        return cvtColor(edges, COLOR_GRAY2RGB)
 
     def sobel_filter(self, frame: np.ndarray) -> np.ndarray:
         # Convert the frame to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        gray = cvtColor(frame, COLOR_RGB2GRAY)
 
         # Calculate the x and y gradients using the Sobel operator
-        grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3, scale=1, delta=0, borderType=cv2.BORDER_DEFAULT)
-        grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3, scale=1, delta=0, borderType=cv2.BORDER_DEFAULT)
+        grad_x = Sobel(gray, CV_16S, 1, 0, ksize=3, scale=1, delta=0, borderType=BORDER_DEFAULT)
+        grad_y = Sobel(gray, CV_16S, 0, 1, ksize=3, scale=1, delta=0, borderType=BORDER_DEFAULT)
 
         # Convert gradients back to 8 bit unsigned int
-        abs_grad_x = cv2.convertScaleAbs(grad_x)
-        abs_grad_y = cv2.convertScaleAbs(grad_y)
+        abs_grad_x = convertScaleAbs(grad_x)
+        abs_grad_y = convertScaleAbs(grad_y)
 
         # Combine the two gradients
-        sobel = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+        sobel = addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
 
         # Convert single channel grayscale image to three channel RGB
-        sobel_colored = cv2.cvtColor(sobel, cv2.COLOR_GRAY2RGB)
+        sobel_colored = cvtColor(sobel, COLOR_GRAY2RGB)
 
         return sobel_colored
 
@@ -387,36 +401,36 @@ class FrameProcessor:
         return 255 - frame
 
     def threshold_filter(self, frame: np.ndarray, method="binary") -> np.ndarray:
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        gray = cvtColor(frame, COLOR_RGB2GRAY)
 
         if method == "binary":
-            _, thresholded = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, 127, 255, THRESH_BINARY)
         elif method == "yen":
             threshold_value = threshold_yen(gray)
-            _, thresholded = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, threshold_value, 255, THRESH_BINARY)
         elif method == "triangle":
             threshold_value = threshold_triangle(gray)
-            _, thresholded = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, threshold_value, 255, THRESH_BINARY)
         elif method == "otsu":
-            _, thresholded = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, thresholded = threshold(gray, 0, 255, THRESH_BINARY + THRESH_OTSU)
         elif method == "minimum":
             threshold_value = threshold_minimum(gray)
-            _, thresholded = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, threshold_value, 255, THRESH_BINARY)
         elif method == "mean":
             threshold_value = np.mean(gray)
-            _, thresholded = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, threshold_value, 255, THRESH_BINARY)
         elif method == "isodata":
             threshold_value = threshold_isodata(gray)
-            _, thresholded = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            _, thresholded = threshold(gray, threshold_value, 255, THRESH_BINARY)
         else:
             print(f"Warning: Unknown threshold method '{method}' provided!")
             return frame
 
-        return cv2.cvtColor(thresholded, cv2.COLOR_GRAY2RGB)
+        return cvtColor(thresholded, COLOR_GRAY2RGB)
 
     def color_swap(self, frame: np.ndarray) -> np.ndarray:
-        b, g, r = cv2.split(frame)
-        return cv2.merge([r, g, b])
+        b, g, r = split(frame)
+        return merge([r, g, b])
 
 
 class App(QMainWindow):
@@ -619,7 +633,7 @@ class App(QMainWindow):
     def slider_released(self):
         if self.cap and self.video_source != "webcam":
             desired_frame = self.video_progress.value()
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, desired_frame)
+            self.cap.set(CAP_PROP_POS_FRAMES, desired_frame)
             self.slider_being_dragged = False
 
     def set_filter(self, filter_type):
@@ -675,18 +689,18 @@ class App(QMainWindow):
     def start_webcam(self):
         if not self.cap:
             if self.video_source == 'webcam':
-                self.cap = cv2.VideoCapture(0)
+                self.cap = VideoCapture(0)
 
                 # Timer for updating video feed
                 interval = 5 #FPS
             else:
-                self.cap = cv2.VideoCapture(self.video_source)
+                self.cap = VideoCapture(self.video_source)
 
                 # Adjust the range of the slider to match the video's duration in milliseconds
-                total_duration = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) / self.cap.get(cv2.CAP_PROP_FPS) * 1000)
+                total_duration = int(self.cap.get(CAP_PROP_FRAME_COUNT) / self.cap.get(CAP_PROP_FPS) * 1000)
                 self.video_progress.setRange(0, total_duration)
                 self.video_progress.setValue(0)
-                frame_rate = int(self.cap.get(cv2.CAP_PROP_FPS))
+                frame_rate = int(self.cap.get(CAP_PROP_FPS))
                 interval = int(1000 / frame_rate)  # Convert frame rate to interval in milliseconds
 
             if not self.cap.isOpened():
@@ -694,8 +708,8 @@ class App(QMainWindow):
                 self.cap = None
                 return
 
-            W = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # Width of the frames
-            H = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) # Height of the frames
+            W = int(self.cap.get(CAP_PROP_FRAME_WIDTH))  # Width of the frames
+            H = int(self.cap.get(CAP_PROP_FRAME_HEIGHT)) # Height of the frames
             C = 3  # Number of channels (3 for color frames, 1 for grayscale)
 
             input_size = W * H * C
@@ -727,13 +741,13 @@ class App(QMainWindow):
 
             # Update video progress slider based on video time
             if self.video_source != "webcam":
-                elapsed_time = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))
+                elapsed_time = int(self.cap.get(CAP_PROP_POS_MSEC))
                 # Update the slider only if it's not being dragged by the user
                 if not self.slider_being_dragged:
                     self.video_progress.setValue(elapsed_time)
 
             if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cvtColor(frame, COLOR_BGR2RGB)
 
                 # Show the unprocessed frame
                 self.display_frame(frame, self.input_label)
@@ -779,16 +793,19 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
-    # Load the stylesheet
-    STYLE_FILE_NAME = "style_dark.qss"
-    FOLDER_NAME = "/app_data"
-    file_path = os.path.join(
-        os.path.dirname(
-            os.path.abspath(__file__)) +
-        FOLDER_NAME,
-        STYLE_FILE_NAME)
-    with open(file_path, "r", encoding="utf-8") as f:
-        app.setStyleSheet(f.read())
+    try:
+        # Load the stylesheet
+        STYLE_FILE_NAME = "style_dark.qss"
+        FOLDER_NAME = "/app_data"
+        file_path = path.join(
+            path.dirname(
+                path.abspath(__file__)) +
+            FOLDER_NAME,
+            STYLE_FILE_NAME)
+        with open(file_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+    except:
+        print("Could not find the stylesheet")
 
     window = App()
     window.showMaximized()
